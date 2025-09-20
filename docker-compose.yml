@@ -1,6 +1,160 @@
-version: '3.8'
-
 services:
+  # Traefik - Reverse Proxy & SSL Termination
+  traefik:
+    image: traefik:v3.1
+    container_name: n8n-traefik
+    restart: unless-stopped
+    command:
+      - "--api.dashboard=true"
+      - "--api.debug=${TRAEFIK_DEBUG:-false}"
+      - "--log.level=${TRAEFIK_LOG_LEVEL:-INFO}"
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+      - "--global.checkNewVersion=${TRAEFIK_CHECK_VERSION:-true}"
+      - "--global.sendAnonymousUsage=${TRAEFIK_SEND_USAGE:-false}"
+    ports:
+      - "${TRAEFIK_HTTP_PORT:-80}:80"
+      - "${TRAEFIK_HTTPS_PORT:-443}:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8090}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik_letsencrypt:/letsencrypt
+      - ./traefik/dynamic:/etc/traefik/dynamic:ro
+      - ./traefik/logs:/var/log/traefik
+    environment:
+      - CF_API_EMAIL=${CLOUDFLARE_EMAIL:-}
+      - CF_DNS_API_TOKEN=${CLOUDFLARE_API_TOKEN:-}
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.traefik-dashboard.rule=Host(`traefik.${DOMAIN_NAME:-localhost}`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$2y$$10$$K.0z7.gWeKUG/ClBkJvXVuT5iCb/7JGv9EhEhjxj1RB2Z.ZEYQYMa}"
+      # Redirect HTTP to HTTPS
+      - "traefik.http.routers.http-catchall.rule=hostregexp(`{host:.+}`)"
+      - "traefik.http.routers.http-catchall.entrypoints=web"
+      - "traefik.http.routers.http-catchall.middlewares=redirect-to-https"
+      - "traefik.http.middlewares.redirect-to-https.redirectscheme.scheme=https"
+    networks:
+      - n8n-network
+      - traefik-network
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - traefik
+      - full-ssl
+
+  # Watchtower - Automatic Container Updates
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: n8n-watchtower
+    restart: unless-stopped
+    environment:
+      - WATCHTOWER_CLEANUP=${WATCHTOWER_CLEANUP:-true}
+      - WATCHTOWER_REMOVE_VOLUMES=${WATCHTOWER_REMOVE_VOLUMES:-false}
+      - WATCHTOWER_INCLUDE_STOPPED=${WATCHTOWER_INCLUDE_STOPPED:-false}
+      - WATCHTOWER_INCLUDE_RESTARTING=${WATCHTOWER_INCLUDE_RESTARTING:-true}
+      - WATCHTOWER_POLL_INTERVAL=${WATCHTOWER_POLL_INTERVAL:-21600}
+      - WATCHTOWER_DEBUG=${WATCHTOWER_DEBUG:-false}
+      - WATCHTOWER_TIMEOUT=${WATCHTOWER_TIMEOUT:-10s}
+      - WATCHTOWER_NOTIFICATIONS=${WATCHTOWER_NOTIFICATIONS:-}
+      - WATCHTOWER_NOTIFICATION_URL=${WATCHTOWER_NOTIFICATION_URL:-}
+      - WATCHTOWER_SCHEDULE=${WATCHTOWER_SCHEDULE:-}
+      - TZ=${TIMEZONE:-UTC}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command: ${WATCHTOWER_MONITOR_ONLY:+--monitor-only} ${WATCHTOWER_RUN_ONCE:+--run-once} ${WATCHTOWER_CONTAINERS:-n8n n8n-postgres n8n-valkey}
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    networks:
+      - n8n-network
+    profiles:
+      - watchtower
+      - full
+
+  # Portainer - Docker management web interface
+  portainer:
+    image: portainer/portainer-ce:latest
+    container_name: n8n-portainer
+    restart: unless-stopped
+    ports:
+      - "${PORTAINER_PORT:-9010}:9000"
+      - "${PORTAINER_EDGE_PORT:-8000}:8000"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - portainer_data:/data
+    environment:
+      - PORTAINER_ADMIN_PASSWORD_FILE=/run/secrets/portainer_admin_password
+    secrets:
+      - portainer_admin_password
+    labels:
+      # Traefik labels
+      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
+      - "traefik.http.routers.portainer.rule=Host(`${PORTAINER_DOMAIN:-portainer.localhost}`)"
+      - "traefik.http.routers.portainer.entrypoints=websecure"
+      - "traefik.http.routers.portainer.tls.certresolver=letsencrypt"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+      # Watchtower labels
+      - "com.centurylinklabs.watchtower.enable=${WATCHTOWER_ENABLE_PORTAINER:-false}"
+    networks:
+      - n8n-network
+      - traefik-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/api/status"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    profiles:
+      - portainer
+      - management-ui
+      - full-ui
+
+  # Dozzle - Real-time Docker log viewer
+  dozzle:
+    image: amir20/dozzle:latest
+    container_name: n8n-dozzle
+    restart: unless-stopped
+    ports:
+      - "${DOZZLE_PORT:-9999}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - DOZZLE_NO_ANALYTICS=${DOZZLE_NO_ANALYTICS:-true}
+      - DOZZLE_USERNAME=${DOZZLE_USERNAME:-admin}
+      - DOZZLE_PASSWORD=${DOZZLE_PASSWORD:-admin123}
+      - DOZZLE_FILTER=${DOZZLE_FILTER:-name=n8n*}
+    labels:
+      # Traefik labels
+      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
+      - "traefik.http.routers.dozzle.rule=Host(`${DOZZLE_DOMAIN:-logs.localhost}`)"
+      - "traefik.http.routers.dozzle.entrypoints=websecure"
+      - "traefik.http.routers.dozzle.tls.certresolver=letsencrypt"
+      - "traefik.http.services.dozzle.loadbalancer.server.port=8080"
+      # Watchtower labels
+      - "com.centurylinklabs.watchtower.enable=${WATCHTOWER_ENABLE_DOZZLE:-false}"
+    networks:
+      - n8n-network
+      - traefik-network
+    profiles:
+      - dozzle
+      - logs-ui
+      - management-ui
+      - full-ui
+
   # n8n - Workflow automation platform
   n8n:
     image: n8nio/n8n:latest
@@ -58,8 +212,22 @@ services:
       valkey:
         condition: service_healthy
         required: false
+    labels:
+      # Traefik labels for reverse proxy
+      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
+      - "traefik.http.routers.n8n.rule=Host(`${N8N_DOMAIN:-n8n.localhost}`)"
+      - "traefik.http.routers.n8n.entrypoints=websecure"
+      - "traefik.http.routers.n8n.tls.certresolver=letsencrypt"
+      - "traefik.http.services.n8n.loadbalancer.server.port=5678"
+      # Security headers
+      - "traefik.http.routers.n8n.middlewares=n8n-headers"
+      - "traefik.http.middlewares.n8n-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.middlewares.n8n-headers.headers.customrequestheaders.X-Forwarded-For="
+      # Watchtower labels
+      - "com.centurylinklabs.watchtower.enable=${WATCHTOWER_ENABLE_N8N:-true}"
     networks:
       - n8n-network
+      - traefik-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:5678/healthz || exit 1"]
       interval: 30s
@@ -97,12 +265,7 @@ services:
     image: valkey/valkey:7-alpine
     container_name: n8n-valkey
     restart: unless-stopped
-    command: >
-      valkey-server
-      --appendonly yes
-      --requirepass ${REDIS_PASSWORD:-}
-      --maxmemory ${REDIS_MAX_MEMORY:-256mb}
-      --maxmemory-policy allkeys-lru
+    command: valkey-server /usr/local/etc/valkey/valkey.conf
     volumes:
       - valkey_data:/data
       - ./valkey/valkey.conf:/usr/local/etc/valkey/valkey.conf:ro
@@ -132,8 +295,18 @@ services:
     depends_on:
       valkey:
         condition: service_healthy
+    labels:
+      # Traefik labels
+      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
+      - "traefik.http.routers.valkey-commander.rule=Host(`${VALKEY_COMMANDER_DOMAIN:-valkey.localhost}`)"
+      - "traefik.http.routers.valkey-commander.entrypoints=websecure"
+      - "traefik.http.routers.valkey-commander.tls.certresolver=letsencrypt"
+      - "traefik.http.services.valkey-commander.loadbalancer.server.port=8081"
+      # Watchtower labels
+      - "com.centurylinklabs.watchtower.enable=${WATCHTOWER_ENABLE_VALKEY_COMMANDER:-true}"
     networks:
       - n8n-network
+      - traefik-network
     profiles:
       - valkey-ui
       - full
@@ -156,8 +329,18 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+    labels:
+      # Traefik labels
+      - "traefik.enable=${TRAEFIK_ENABLE:-false}"
+      - "traefik.http.routers.pgadmin.rule=Host(`${PGADMIN_DOMAIN:-pgadmin.localhost}`)"
+      - "traefik.http.routers.pgadmin.entrypoints=websecure"
+      - "traefik.http.routers.pgadmin.tls.certresolver=letsencrypt"
+      - "traefik.http.services.pgadmin.loadbalancer.server.port=80"
+      # Watchtower labels
+      - "com.centurylinklabs.watchtower.enable=${WATCHTOWER_ENABLE_PGADMIN:-true}"
     networks:
       - n8n-network
+      - traefik-network
     profiles:
       - postgres-ui
       - full
@@ -171,7 +354,18 @@ volumes:
     driver: local
   pgadmin_data:
     driver: local
+  traefik_letsencrypt:
+    driver: local
+  portainer_data:
+    driver: local
 
 networks:
   n8n-network:
     driver: bridge
+  traefik-network:
+    driver: bridge
+    external: false
+
+secrets:
+  portainer_admin_password:
+    file: ./secrets/portainer_admin_password.txt

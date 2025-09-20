@@ -47,14 +47,95 @@ generate_secrets() {
         if ! grep -q "^N8N_ENCRYPTION_KEY=.\+" .env; then
             print_info "Generating N8N_ENCRYPTION_KEY..."
             ENCRYPTION_KEY=$(openssl rand -base64 32)
-            sed -i.bak "s/^N8N_ENCRYPTION_KEY=.*/N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}/" .env
+            # Use a different delimiter to avoid issues with forward slashes
+            sed -i.bak "s|^N8N_ENCRYPTION_KEY=.*|N8N_ENCRYPTION_KEY=${ENCRYPTION_KEY}|" .env
         fi
         
         # Check if JWT secret is empty
         if ! grep -q "^N8N_JWT_SECRET=.\+" .env; then
             print_info "Generating N8N_JWT_SECRET..."
             JWT_SECRET=$(openssl rand -base64 32)
-            sed -i.bak "s/^N8N_JWT_SECRET=.*/N8N_JWT_SECRET=${JWT_SECRET}/" .env
+            # Use a different delimiter to avoid issues with forward slashes
+            sed -i.bak "s|^N8N_JWT_SECRET=.*|N8N_JWT_SECRET=${JWT_SECRET}|" .env
+        fi
+    fi
+}
+
+# Check SSL configuration
+check_ssl_config() {
+    local domain_name=$(grep "^DOMAIN_NAME=" .env | cut -d'=' -f2)
+    local acme_email=$(grep "^ACME_EMAIL=" .env | cut -d'=' -f2)
+    
+    if [ "$domain_name" = "localhost" ] || [ -z "$domain_name" ]; then
+        print_warning "DOMAIN_NAME is set to 'localhost' or empty"
+        print_info "For SSL certificates, you need a real domain name"
+        print_info "Update DOMAIN_NAME in .env file with your actual domain"
+    fi
+    
+    if [ -z "$acme_email" ] || [ "$acme_email" = "admin@example.com" ]; then
+        print_warning "ACME_EMAIL not configured properly"
+        print_info "Please set a valid email address in .env for Let's Encrypt"
+    fi
+}
+
+# Show access information
+show_access_info() {
+    local profile="$1"
+    local traefik_enabled=$(grep "^TRAEFIK_ENABLE=" .env | cut -d'=' -f2)
+    local domain_name=$(grep "^DOMAIN_NAME=" .env | cut -d'=' -f2)
+    local n8n_domain=$(grep "^N8N_DOMAIN=" .env | cut -d'=' -f2)
+    
+    print_info "Access Information:"
+    
+    if [ "$traefik_enabled" = "true" ] && [ "$domain_name" != "localhost" ]; then
+        # SSL/Domain access
+        print_info "n8n: https://${n8n_domain}"
+        
+        if [[ $profile == *"postgres-ui"* ]] || [[ $profile == "full"* ]]; then
+            local pgadmin_domain=$(grep "^PGADMIN_DOMAIN=" .env | cut -d'=' -f2)
+            print_info "pgAdmin: https://${pgadmin_domain}"
+        fi
+        
+        if [[ $profile == *"valkey-ui"* ]] || [[ $profile == "full"* ]]; then
+            local valkey_domain=$(grep "^VALKEY_COMMANDER_DOMAIN=" .env | cut -d'=' -f2)
+            print_info "Valkey Commander: https://${valkey_domain}"
+        fi
+        
+        if [[ $profile == *"traefik"* ]] || [[ $profile == *"ssl"* ]] || [[ $profile == "full-ssl" ]]; then
+            print_info "Traefik Dashboard: https://traefik.${domain_name}"
+        fi
+        
+        if [[ $profile == *"portainer"* ]] || [[ $profile == *"management-ui"* ]] || [[ $profile == *"full-ui"* ]]; then
+            local portainer_domain=$(grep "^PORTAINER_DOMAIN=" .env | cut -d'=' -f2)
+            print_info "Portainer: https://${portainer_domain}"
+        fi
+        
+        if [[ $profile == *"dozzle"* ]] || [[ $profile == *"management-ui"* ]] || [[ $profile == *"full-ui"* ]]; then
+            local dozzle_domain=$(grep "^DOZZLE_DOMAIN=" .env | cut -d'=' -f2)
+            print_info "Dozzle (Logs): https://${dozzle_domain}"
+        fi
+    else
+        # Local access
+        print_info "n8n: http://localhost:$(grep N8N_PORT .env | cut -d'=' -f2 || echo 5678)"
+        
+        if [[ $profile == *"postgres-ui"* ]] || [[ $profile == "full"* ]]; then
+            print_info "pgAdmin: http://localhost:$(grep PGADMIN_PORT .env | cut -d'=' -f2 || echo 8080)"
+        fi
+        
+        if [[ $profile == *"valkey-ui"* ]] || [[ $profile == "full"* ]]; then
+            print_info "Valkey Commander: http://localhost:$(grep REDIS_COMMANDER_PORT .env | cut -d'=' -f2 || echo 8081)"
+        fi
+        
+        if [[ $profile == *"traefik"* ]] || [[ $profile == *"ssl"* ]] || [[ $profile == "full-ssl" ]]; then
+            print_info "Traefik Dashboard: http://localhost:$(grep TRAEFIK_DASHBOARD_PORT .env | cut -d'=' -f2 || echo 8090)"
+        fi
+        
+        if [[ $profile == *"portainer"* ]] || [[ $profile == *"management-ui"* ]] || [[ $profile == *"full-ui"* ]]; then
+            print_info "Portainer: http://localhost:$(grep '^PORTAINER_PORT=' .env | cut -d'=' -f2 || echo 9010)"
+        fi
+        
+        if [[ $profile == *"dozzle"* ]] || [[ $profile == *"management-ui"* ]] || [[ $profile == *"full-ui"* ]]; then
+            print_info "Dozzle (Logs): http://localhost:$(grep DOZZLE_PORT .env | cut -d'=' -f2 || echo 9999)"
         fi
     fi
 }
@@ -80,12 +161,21 @@ show_usage() {
     echo "  valkey            n8n + Valkey cache/queue"
     echo "  postgres-ui       postgres + pgAdmin UI"
     echo "  valkey-ui         valkey + Valkey Commander UI"
+    echo "  traefik           n8n + Traefik reverse proxy"
+    echo "  watchtower        n8n + automatic updates"
+    echo "  portainer         n8n + Docker management UI"
+    echo "  dozzle            n8n + Docker logs viewer"
+    echo "  management-ui     All management UIs (Portainer + Dozzle)"
+    echo "  ssl               n8n + Traefik with SSL (requires domain)"
     echo "  full              All services (n8n + PostgreSQL + Valkey + UIs)"
+    echo "  full-ssl          All services + Traefik with SSL"
+    echo "  full-ui           All services + management UIs"
     echo ""
     echo "Examples:"
     echo "  $0 start                    # Start n8n only (SQLite)"
     echo "  $0 start postgres           # Start n8n with PostgreSQL"
-    echo "  $0 start full               # Start all services"
+    echo "  $0 start ssl                # Start n8n with Traefik SSL"
+    echo "  $0 start full-ssl           # Start all services with SSL"
     echo "  $0 logs n8n                 # Show n8n logs"
     echo "  $0 backup                   # Backup n8n data"
 }
@@ -117,27 +207,59 @@ start_services() {
             print_info "Starting n8n with Valkey and Commander UI"
             docker-compose --profile valkey --profile valkey-ui up -d
             ;;
+        "traefik")
+            print_info "Starting n8n with Traefik reverse proxy"
+            docker-compose --profile traefik up -d
+            ;;
+        "watchtower")
+            print_info "Starting n8n with automatic updates"
+            docker-compose --profile watchtower up -d
+            ;;
+        "portainer")
+            print_info "Starting n8n with Docker management UI"
+            docker-compose --profile portainer up -d
+            ;;
+        "dozzle")
+            print_info "Starting n8n with Docker logs viewer"
+            docker-compose --profile dozzle up -d
+            ;;
+        "management-ui")
+            print_info "Starting n8n with all management UIs"
+            docker-compose --profile management-ui up -d
+            ;;
+        "ssl")
+            print_info "Starting n8n with Traefik SSL (requires domain configuration)"
+            check_ssl_config
+            # Enable Traefik in environment
+            sed -i.bak "s|^TRAEFIK_ENABLE=.*|TRAEFIK_ENABLE=true|" .env
+            docker-compose --profile traefik up -d
+            ;;
         "full")
             print_info "Starting all services (n8n + PostgreSQL + Valkey + UIs)"
             docker-compose --profile full up -d
             ;;
+        "full-ssl")
+            print_info "Starting all services with Traefik SSL"
+            check_ssl_config
+            # Enable Traefik in environment
+            sed -i.bak "s|^TRAEFIK_ENABLE=.*|TRAEFIK_ENABLE=true|" .env
+            docker-compose --profile full-ssl up -d
+            ;;
+        "full-ui")
+            print_info "Starting all services with management UIs"
+            docker-compose --profile full-ui up -d
+            ;;
         *)
             print_error "Unknown profile: $profile"
-            print_info "Available profiles: n8n-only, postgres, valkey, postgres-ui, valkey-ui, full"
+            print_info "Available profiles: n8n-only, postgres, valkey, postgres-ui, valkey-ui, traefik, watchtower, portainer, dozzle, management-ui, ssl, full, full-ssl, full-ui"
             exit 1
             ;;
     esac
     
     print_success "Services started successfully!"
-    print_info "n8n will be available at: http://localhost:$(grep N8N_PORT .env | cut -d'=' -f2 || echo 5678)"
     
-    if [[ $profile == *"postgres-ui"* ]] || [[ $profile == "full" ]]; then
-        print_info "pgAdmin available at: http://localhost:$(grep PGADMIN_PORT .env | cut -d'=' -f2 || echo 8080)"
-    fi
-    
-    if [[ $profile == *"valkey-ui"* ]] || [[ $profile == "full" ]]; then
-        print_info "Valkey Commander available at: http://localhost:$(grep REDIS_COMMANDER_PORT .env | cut -d'=' -f2 || echo 8081)"
-    fi
+    # Show access information
+    show_access_info "$profile"
 }
 
 # Stop services

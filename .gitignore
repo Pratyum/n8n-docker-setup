@@ -53,6 +53,16 @@ valkey/valkey-custom.conf
 postgres/custom.sql
 pgadmin/pgadmin4.conf
 
+# Secrets directory (passwords, keys, etc.)
+secrets/*.txt
+secrets/*.key
+secrets/*.pem
+
+# Traefik files
+traefik/logs/*.log
+traefik/dynamic/custom-*.yml
+traefik/acme.json
+
 # Certificate files
 *.pem
 *.key
