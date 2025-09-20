@@ -1,0 +1,64 @@
+# Git ignore file for n8n Docker setup
+
+# Environment files (keep .env.example)
+.env
+.env.local
+.env.*.local
+.env.bak
+
+# Backups (too large for git)
+backups/*.tar.gz
+backups/*.sql
+backups/*.dump
+
+# Logs
+*.log
+logs/
+
+# Docker volumes data (handled by Docker)
+volumes/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Custom node modules (if installing locally)
+node_modules/
+npm-debug.log*
+
+# pgAdmin files
+pgadmin/*.db
+pgadmin/*.pid
+
+# Custom configuration files that might contain secrets
+valkey/valkey-custom.conf
+postgres/custom.sql
+pgadmin/pgadmin4.conf
+
+# Certificate files
+*.pem
+*.key
+*.crt
+*.csr
+
+# Local development overrides
+docker-compose.override.yml
+docker-compose.local.yml
